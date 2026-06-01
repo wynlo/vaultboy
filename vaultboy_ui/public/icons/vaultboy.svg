@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vaultboy icon">
+  <rect width="512" height="512" rx="112" fill="#fff"/>
+  <path d="M256 54 396 152l-52 232-88 74-88-74-52-232L256 54Z" fill="#fff" stroke="#000" stroke-width="18" stroke-linejoin="round"/>
+  <path d="M256 54v404" stroke="#000" stroke-width="14" stroke-linecap="round"/>
+  <path d="M116 152h280L256 220 116 152Z" fill="#f2f2f2" stroke="#000" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M116 152 256 220 168 384 116 152Z" fill="#d9d9d9" stroke="#000" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M396 152 256 220l88 164 52-232Z" fill="#bfbfbf" stroke="#000" stroke-width="14" stroke-linejoin="round"/>
+  <path d="M168 384 256 220l88 164-88 74-88-74Z" fill="#fff" stroke="#000" stroke-width="14" stroke-linejoin="round"/>
+  <circle cx="356" cy="132" r="18" fill="#000" opacity="0.12"/>
+</svg>

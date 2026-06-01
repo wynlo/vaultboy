@@ -1,0 +1,27 @@
+{
+  "name": "vaultboy-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "4.3.4",
+    "vite": "5.4.21",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "lucide-react": "latest",
+    "clsx": "latest",
+    "tailwind-merge": "latest",
+    "class-variance-authority": "latest"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17",
+    "postcss": "latest",
+    "autoprefixer": "latest"
+  }
+}

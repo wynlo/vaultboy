@@ -1,0 +1,17 @@
+[project]
+name = "vaultboy"
+version = "0.1.0"
+description = "Local macOS utility for syncing project Obsidian vaults with iCloud Obsidian."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "watchfiles>=0.21",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["vaultboy_app*"]

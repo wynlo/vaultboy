@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="${ROOT_DIR}/.venv"
+UI_DIR="${ROOT_DIR}/vaultboy_ui"
+WEB_INDEX="${ROOT_DIR}/vaultboy_app/web/index.html"
+DEV_MODE="1"
+
+if [[ "${1:-}" == "--dev" ]]; then
+  DEV_MODE="1"
+  shift
+elif [[ "${1:-}" == "--prod" || "${1:-}" == "--production" ]]; then
+  DEV_MODE="0"
+  shift
+fi
+
+PYTHON_BIN=""
+
+if command -v brew >/dev/null 2>&1; then
+  BREW_EXPAT_PREFIX="$(brew --prefix expat 2>/dev/null || true)"
+  if [[ -n "${BREW_EXPAT_PREFIX}" && -d "${BREW_EXPAT_PREFIX}/lib" ]]; then
+    export DYLD_LIBRARY_PATH="${BREW_EXPAT_PREFIX}/lib${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+  fi
+fi
+
+have_python_runtime_deps() {
+  "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import fastapi
+import uvicorn
+PY
+}
+
+python_is_healthy() {
+  "${1}" - <<'PY' >/dev/null 2>&1
+import ensurepip
+PY
+}
+
+python_has_pip() {
+  "${1}" -m pip --version >/dev/null 2>&1
+}
+
+python_version_supported() {
+  "${1}" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 12) else 1)
+PY
+}
+
+python_can_create_venv() {
+  local candidate="$1"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/vaultboy-venv-check.XXXXXX")"
+  if "${candidate}" -m venv "${tmp_dir}/venv" >/dev/null 2>&1; then
+    rm -rf "${tmp_dir}"
+    return 0
+  fi
+  rm -rf "${tmp_dir}"
+  return 1
+}
+
+select_python() {
+  if [[ -x "${VENV_DIR}/bin/python" ]]; then
+    if python_version_supported "${VENV_DIR}/bin/python" && python_is_healthy "${VENV_DIR}/bin/python" && python_has_pip "${VENV_DIR}/bin/python"; then
+      PYTHON_BIN="${VENV_DIR}/bin/python"
+      return
+    fi
+    echo "[startup] Existing virtualenv is unsupported or incomplete; recreating .venv"
+    rm -rf "${VENV_DIR}"
+  fi
+
+  local candidates=()
+  local name path
+  for name in python3.12 python3.13 python3.11 python3 python; do
+    path="$(command -v "${name}" 2>/dev/null || true)"
+    if [[ -n "${path}" ]]; then
+      candidates+=("${path}")
+    fi
+  done
+
+  for path in "${candidates[@]}"; do
+    if python_version_supported "${path}" && python_is_healthy "${path}" && python_can_create_venv "${path}"; then
+      PYTHON_BIN="${path}"
+      return
+    fi
+  done
+
+  echo "[startup] No Python runtime can create a working virtualenv." >&2
+  echo "[startup] Try: brew install python@3.13" >&2
+  exit 2
+}
+
+bootstrap_python_env() {
+  if [[ -d "${VENV_DIR}" ]]; then
+    if ! python_version_supported "${VENV_DIR}/bin/python" || ! python_is_healthy "${VENV_DIR}/bin/python" || ! python_has_pip "${VENV_DIR}/bin/python"; then
+      echo "[startup] Existing virtualenv is broken; recreating .venv"
+      rm -rf "${VENV_DIR}"
+    fi
+  fi
+
+  if ! python_is_healthy "${PYTHON_BIN}"; then
+    echo "[startup] Python runtime is broken or missing ensurepip." >&2
+    exit 2
+  fi
+
+  if [[ ! -d "${VENV_DIR}" ]]; then
+    echo "[startup] Creating local virtualenv at .venv"
+    "${PYTHON_BIN}" -m venv "${VENV_DIR}"
+  fi
+
+  PYTHON_BIN="${VENV_DIR}/bin/python"
+  echo "[startup] Installing Python dependencies"
+  "${PYTHON_BIN}" -m pip install -U pip >/dev/null
+  "${PYTHON_BIN}" -m pip install -e "${ROOT_DIR}" >/dev/null
+}
+
+select_python
+
+if ! have_python_runtime_deps; then
+  bootstrap_python_env
+fi
+
+ensure_ui_build() {
+  if [[ ! -d "${UI_DIR}" ]]; then
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[startup] npm is required to build the Vaultboy UI." >&2
+    exit 2
+  fi
+  if [[ ! -d "${UI_DIR}/node_modules" ]]; then
+    echo "[startup] Installing UI dependencies"
+    (cd "${UI_DIR}" && npm install >/dev/null)
+  fi
+  echo "[startup] Building UI"
+  (cd "${UI_DIR}" && npm run build >/dev/null)
+  if [[ ! -f "${WEB_INDEX}" ]]; then
+    echo "[startup] UI build did not produce ${WEB_INDEX}" >&2
+    exit 2
+  fi
+}
+
+ensure_ui_deps() {
+  if [[ ! -d "${UI_DIR}" ]]; then
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[startup] npm is required to run the Vaultboy UI." >&2
+    exit 2
+  fi
+  if [[ ! -d "${UI_DIR}/node_modules" ]]; then
+    echo "[startup] Installing UI dependencies"
+    (cd "${UI_DIR}" && npm install >/dev/null)
+  fi
+}
+
+port_is_free() {
+  local port="$1"
+  ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
+}
+
+run_dev() {
+  ensure_ui_deps
+  if ! port_is_free 4567; then
+    echo "[dev] Port 4567 is already in use. Stop the existing Vaultboy/API process first." >&2
+    exit 2
+  fi
+  if ! port_is_free 5173; then
+    echo "[dev] Port 5173 is already in use. Stop the existing Vite process first." >&2
+    exit 2
+  fi
+  export VAULTBOY_DEV="1"
+  echo "[dev] Starting Vite UI at http://0.0.0.0:5173"
+  echo "[dev] Starting API at http://0.0.0.0:4567"
+  (cd "${UI_DIR}" && npm run dev) &
+  UI_PID="$!"
+  trap 'kill "${UI_PID}" >/dev/null 2>&1 || true' EXIT INT TERM
+  exec "${PYTHON_BIN}" -m uvicorn vaultboy_app.app.main:app --host 0.0.0.0 --port 4567 --reload --reload-dir "${ROOT_DIR}/vaultboy_app"
+}
+
+if [[ "${DEV_MODE}" == "1" ]]; then
+  export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+  run_dev
+fi
+
+ensure_ui_build
+
+export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+exec "${PYTHON_BIN}" -m vaultboy_app.app "$@"

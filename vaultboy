@@ -4,8 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 UI_DIR="${ROOT_DIR}/vaultboy_ui"
+DESKTOP_DIR="${ROOT_DIR}/vaultboy_desktop"
 WEB_INDEX="${ROOT_DIR}/vaultboy_app/web/index.html"
 DEV_MODE="1"
+APP_MODE="0"
+APP_OPEN="0"
 
 if [[ "${1:-}" == "--dev" ]]; then
   DEV_MODE="1"
@@ -13,6 +16,13 @@ if [[ "${1:-}" == "--dev" ]]; then
 elif [[ "${1:-}" == "--prod" || "${1:-}" == "--production" ]]; then
   DEV_MODE="0"
   shift
+elif [[ "${1:-}" == "--app" ]]; then
+  APP_MODE="1"
+  shift
+  if [[ "${1:-}" == "--open" ]]; then
+    APP_OPEN="1"
+    shift
+  fi
 fi
 
 PYTHON_BIN=""
@@ -160,6 +170,41 @@ port_is_free() {
   ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
 }
 
+build_app() {
+  if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
+    echo "[app] Rust is required to build the desktop app." >&2
+    echo "[app] Try: brew install rust" >&2
+    exit 2
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "[app] npm is required to build the desktop app." >&2
+    exit 2
+  fi
+  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+    bootstrap_python_env
+  fi
+  ensure_ui_deps
+  if [[ ! -d "${DESKTOP_DIR}/node_modules" ]]; then
+    echo "[app] Installing desktop dependencies"
+    (cd "${DESKTOP_DIR}" && npm install >/dev/null)
+  fi
+  echo "[app] Building backend sidecar (PyInstaller)"
+  "${DESKTOP_DIR}/build-backend.sh"
+  echo "[app] Building Vaultboy.app (Tauri; first build compiles Rust and takes a few minutes)"
+  (cd "${DESKTOP_DIR}" && npx tauri build)
+  local app_path="${DESKTOP_DIR}/src-tauri/target/release/bundle/macos/Vaultboy.app"
+  if [[ ! -d "${app_path}" ]]; then
+    echo "[app] Build finished but ${app_path} was not produced." >&2
+    exit 2
+  fi
+  echo "[app] Built: ${app_path}"
+  if [[ "${APP_OPEN}" == "1" ]]; then
+    open "${app_path}"
+  else
+    echo "[app] Launch it with: open '${app_path}'"
+  fi
+}
+
 run_dev() {
   ensure_ui_deps
   if ! port_is_free 4567; then
@@ -178,6 +223,11 @@ run_dev() {
   trap 'kill "${UI_PID}" >/dev/null 2>&1 || true' EXIT INT TERM
   exec "${PYTHON_BIN}" -m uvicorn vaultboy_app.app.main:app --host 0.0.0.0 --port 4567 --reload --reload-dir "${ROOT_DIR}/vaultboy_app"
 }
+
+if [[ "${APP_MODE}" == "1" ]]; then
+  build_app
+  exit 0
+fi
 
 if [[ "${DEV_MODE}" == "1" ]]; then
   export PYTHONPATH="${ROOT_DIR}${PYTHONPATH:+:${PYTHONPATH}}"

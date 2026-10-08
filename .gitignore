@@ -26,6 +26,14 @@ vaultboy_ui/.vite/
 # Built web assets
 vaultboy_app/web/assets/
 
+# Desktop app build artifacts
+vaultboy_desktop/build/
+vaultboy_desktop/dist/
+vaultboy_desktop/*.spec
+vaultboy_desktop/src-tauri/target/
+vaultboy_desktop/src-tauri/binaries/
+vaultboy_desktop/src-tauri/gen/
+
 # Vaultboy local runtime data
 .vaultboy/
 *.log

@@ -1,11 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BriefcaseBusiness, ChevronDown, ChevronRight, Cloud, Download, Edit3, Eye, FolderOpen, GitBranch, Loader2, Moon, Play, Power, RefreshCw, Save, ScrollText, ShieldCheck, Smartphone, Sun, TestTube2, Upload, X } from 'lucide-react';
+import { BriefcaseBusiness, ChevronDown, Cloud, Download, Edit3, Eye, FolderOpen, GitBranch, Loader2, Moon, Play, Power, RefreshCw, Save, ScrollText, ShieldCheck, Smartphone, Sun, TestTube2, Trash2, Upload, X } from 'lucide-react';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
 import { Input } from './components/ui/input';
 import './styles.css';
+
+type PageId = 'overview' | 'project-form' | 'projects' | 'compare' | 'jobs' | 'logs';
 
 type Project = {
   name: string;
@@ -17,6 +19,7 @@ type Project = {
   icloudExists: boolean;
   repoFileCount: number;
   icloudFileCount: number;
+  icloudEvictedCount: number;
   lastSyncTime: string | null;
   status: string;
   conflictCount: number;
@@ -43,9 +46,12 @@ type Job = {
   copiedCount: number;
   conflictCount: number;
   errorCount: number;
+  skippedCount: number;
+  evictedCount: number;
   copied: string[];
   conflicts: string[];
   errors: string[];
+  skipped: string[];
 };
 
 type AppStatus = {
@@ -65,6 +71,8 @@ type CompareResult = {
   icloudDirCount: number;
   filesOnlyInRepo: string[];
   filesOnlyInIcloud: string[];
+  evictedInRepo: string[];
+  evictedInIcloud: string[];
   dirsOnlyInRepo: string[];
   dirsOnlyInIcloud: string[];
   commonDifferent: string[];
@@ -72,12 +80,31 @@ type CompareResult = {
 
 const emptyForm: FormState = { name: '', repoVaultPath: '', icloudVaultPath: '', enabled: true, propagateDeletes: true };
 const jobsPerPage = 5;
+const primaryPages: { id: PageId; label: string }[] = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'project-form', label: 'Add Project' },
+  { id: 'projects', label: 'Projects' },
+  { id: 'jobs', label: 'Jobs' },
+];
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, retried = false): Promise<T> {
+  const token = localStorage.getItem('vaultboy-token') || '';
+  const { headers, ...rest } = options;
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
+    ...rest,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(headers || {}),
+    },
   });
+  if (response.status === 401 && !retried) {
+    const entered = window.prompt('Vaultboy API token required (apiToken in ~/.vaultboy/config.json):');
+    if (entered && entered.trim()) {
+      localStorage.setItem('vaultboy-token', entered.trim());
+      return request<T>(path, options, true);
+    }
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(text || response.statusText);
@@ -98,6 +125,8 @@ function App() {
   const [icloudOverridden, setIcloudOverridden] = React.useState(false);
   const [jobPage, setJobPage] = React.useState(1);
   const [compare, setCompare] = React.useState<CompareResult | null>(null);
+  const [activePage, setActivePage] = React.useState<PageId>('overview');
+  const [logsProject, setLogsProject] = React.useState<string | null>(null);
 
   const loadProjects = React.useCallback(async (showLoading = false) => {
     if (showLoading) {
@@ -166,6 +195,7 @@ function App() {
       setEditingName(null);
       setIcloudOverridden(false);
       await loadProjects();
+      setActivePage('projects');
     } catch (error) {
       setLogs(`Error: ${(error as Error).message}`);
     } finally {
@@ -174,23 +204,53 @@ function App() {
   }
 
   async function action(project: Project, endpoint: string) {
-    if (endpoint === 'edit') {
-      setEditingName(project.name);
-      setForm({ name: project.name, repoVaultPath: project.repoVaultPath, icloudVaultPath: project.icloudVaultPath, enabled: project.enabled, propagateDeletes: project.propagateDeletes });
-      setIcloudOverridden(true);
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      return;
-    }
+      if (endpoint === 'edit') {
+        setEditingName(project.name);
+        setForm({ name: project.name, repoVaultPath: project.repoVaultPath, icloudVaultPath: project.icloudVaultPath, enabled: project.enabled, propagateDeletes: project.propagateDeletes });
+        setIcloudOverridden(true);
+        setActivePage('project-form');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
     setBusy(`${project.name}:${endpoint}`);
     try {
       if (endpoint === 'logs') {
         const result = await request<{ logs: string[] }>(`/api/projects/${encodeURIComponent(project.name)}/logs`);
         setLogs(result.logs.join('\n') || 'No logs for this project yet.');
+        setLogsProject(project.name);
+        setActivePage('logs');
         return;
       }
       if (endpoint === 'compare') {
         const result = await request<CompareResult>(`/api/projects/${encodeURIComponent(project.name)}/compare`);
         setCompare(result);
+        setActivePage('compare');
+        return;
+      }
+      if (endpoint === 'delete') {
+        const confirmed = window.confirm(`Delete project "${project.name}" from Vaultboy? This will not delete repo or iCloud files.`);
+        if (!confirmed) {
+          return;
+        }
+        const result = await request<Record<string, unknown>>(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
+        setLogs(JSON.stringify(result, null, 2));
+        if (editingName === project.name) {
+          setEditingName(null);
+          setIcloudOverridden(false);
+          setForm(emptyForm);
+        }
+        await loadProjects();
+        setActivePage('projects');
+        return;
+      }
+      if (endpoint === 'force-sync') {
+        const confirmed = window.confirm(`Force sync "${project.name}"? This bypasses the mass-deletion guard and applies all pending deletions.`);
+        if (!confirmed) {
+          return;
+        }
+        const result = await request<Record<string, unknown>>(`/api/projects/${encodeURIComponent(project.name)}/sync`, { method: 'POST', body: JSON.stringify({ force: true }) });
+        setLogs(JSON.stringify(result, null, 2));
+        await loadProjects();
         return;
       }
       const finalEndpoint = endpoint === 'toggle' ? (project.enabled ? 'disable' : 'enable') : endpoint;
@@ -222,15 +282,21 @@ function App() {
   }
 
   return (
-    <main className="mx-auto grid min-h-screen w-full min-w-0 max-w-5xl gap-5 overflow-x-hidden px-4 py-5 sm:px-6 lg:px-8">
-      <div className="flex justify-end">
-        <Button variant="outline" onClick={() => setDarkMode((value) => !value)} aria-pressed={darkMode}>
+    <main className="mx-auto grid min-h-screen w-full min-w-0 content-start gap-4 overflow-x-hidden px-3 py-4 sm:gap-5 sm:px-6 sm:py-5 lg:px-8">
+      <div className="flex items-start justify-between gap-3 sm:items-center">
+        <nav className="grid min-w-0 flex-1 grid-cols-2 sm:flex-none gap-2 rounded-md border bg-card p-2 sm:flex sm:flex-wrap" aria-label="Main pages">
+          {primaryPages.map((page) => (
+            <Button key={page.id} type="button" className="min-w-0 px-2 text-xs sm:text-sm" variant={activePage === page.id ? 'default' : 'ghost'} onClick={() => setActivePage(page.id)}>
+              {page.id === 'project-form' && editingName ? 'Edit Project' : page.label}
+            </Button>
+          ))}
+        </nav>
+        <Button className="w-10 shrink-0 px-0" variant="outline" onClick={() => setDarkMode((value) => !value)} aria-pressed={darkMode} aria-label={darkMode ? 'Light mode' : 'Dark mode'} title={darkMode ? 'Light mode' : 'Dark mode'}>
           {darkMode ? <Sun size={18} /> : <Moon size={18} />}
-          {darkMode ? 'Light mode' : 'Dark mode'}
         </Button>
       </div>
 
-      <CollapsibleSection title="Overview" defaultOpen>
+      {activePage === 'overview' ? <PageCard title="Overview">
         <div className="grid gap-4">
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">local obsidian sync</p>
           <div className="flex items-center gap-3">
@@ -238,18 +304,26 @@ function App() {
             <h1 className="max-w-2xl text-4xl font-semibold tracking-tight text-foreground sm:text-6xl">Vaultboy</h1>
           </div>
           <p className="max-w-2xl text-lg text-muted-foreground">Sync project docs vaults with the iCloud Obsidian folder used by Obsidian iOS.</p>
-          <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-            Scheduler: <strong className="text-foreground">{status?.scheduler.running ? 'running' : 'unknown'}</strong> | Interval: <strong className="text-foreground">{status?.intervalSeconds ?? 300}s</strong> | Next auto-sync: <strong className="text-foreground">{formatDate(status?.scheduler.nextRunAt)}</strong>
+          <div className="grid gap-1 rounded-md border bg-background p-3 text-sm text-muted-foreground sm:block">
+            <span>Scheduler: <strong className="text-foreground">{status?.scheduler.running ? 'running' : 'unknown'}</strong></span>
+            <span className="hidden sm:inline"> | </span>
+            <span>Interval: <strong className="text-foreground">{status?.intervalSeconds ?? 300}s</strong></span>
+            <span className="hidden sm:inline"> | </span>
+            <span>Next auto-sync: <strong className="text-foreground">{formatDate(status?.scheduler.nextRunAt)}</strong></span>
           </div>
           <div className="grid min-w-0 gap-3 sm:grid-cols-3">
             <InfoPill icon={<Smartphone size={18} />} label="iPhone" value="iCloud Drive/Obsidian/<vault-name>" />
             <InfoPill icon={<Cloud size={18} />} label="macOS" value="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault-name>" />
             <InfoPill icon={<ShieldCheck size={18} />} label="Deletes" value="Propagates unchanged synced deletes by default" />
           </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button type="button" onClick={() => setActivePage(projects.length ? 'projects' : 'project-form')}>{projects.length ? 'View Projects' : 'Add First Project'}</Button>
+            <Button type="button" variant="outline" onClick={() => setActivePage('jobs')}>View Sync Jobs</Button>
+          </div>
         </div>
-      </CollapsibleSection>
+      </PageCard> : null}
 
-      <CollapsibleSection title={editingName ? 'Edit Project' : 'Add Project'} description="Map one repo docs vault to its matching iCloud Obsidian vault." defaultOpen>
+      {activePage === 'project-form' ? <PageCard title={editingName ? 'Edit Project' : 'Add Project'} description="Map one repo docs vault to its matching iCloud Obsidian vault.">
           <form className="grid gap-4" onSubmit={saveProject}>
             <Field label="Project name" value={form.name} onChange={(value) => setForm({ ...form, name: value })} placeholder="example-project" />
             <Field
@@ -276,65 +350,68 @@ function App() {
             </label>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button size="lg" type="submit" disabled={busy === 'save'}>{busy === 'save' ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save Project</Button>
-              {editingName && <Button type="button" variant="outline" size="lg" onClick={() => { setEditingName(null); setIcloudOverridden(false); setForm(emptyForm); }}><X size={18} /> Cancel Edit</Button>}
+              {editingName && <Button type="button" variant="outline" size="lg" onClick={() => { setEditingName(null); setIcloudOverridden(false); setForm(emptyForm); setActivePage('projects'); }}><X size={18} /> Cancel Edit</Button>}
             </div>
           </form>
-      </CollapsibleSection>
+      </PageCard> : null}
 
-      <CollapsibleSection
+      {activePage === 'projects' ? <PageCard
         title="Projects"
-        defaultOpen
-        action={<Button type="button" variant="outline" onClick={() => void loadProjects()} disabled={busy === 'refresh'}><RefreshCw size={18} />Refresh</Button>}
+        action={<Button className="w-full sm:w-auto" type="button" variant="outline" onClick={() => void loadProjects()} disabled={busy === 'refresh'}><RefreshCw size={18} />Refresh</Button>}
       >
         {loading ? <Card><CardContent className="p-5 text-muted-foreground">Loading projects...</CardContent></Card> : null}
         {!loading && projects.length === 0 ? <Card><CardContent className="p-5 text-muted-foreground">No projects configured yet.</CardContent></Card> : null}
         {projects.map((project) => <ProjectCard key={project.name} project={project} busy={busy} onAction={action} />)}
-      </CollapsibleSection>
+      </PageCard> : null}
 
-      <CollapsibleSection title="Cleanup Compare" description="Shows current repo/iCloud drift. Prune actions are dry-run only from the UI for now." defaultOpen={false}>
-        {compare ? <ComparePanel compare={compare} setLogs={setLogs} /> : <p className="text-sm text-muted-foreground">Click Compare on a project to inspect repo vs iCloud differences.</p>}
-      </CollapsibleSection>
+      {activePage === 'compare' ? <PageCard
+        title={compare ? `${compare.project} Compare` : 'Cleanup Compare'}
+        description="Repo/iCloud drift for the selected project. Prune actions are dry-run only from the UI for now."
+        action={<Button className="w-full sm:w-auto" type="button" variant="outline" onClick={() => setActivePage('projects')}>Back to Projects</Button>}
+      >
+        {compare ? <ComparePanel compare={compare} setLogs={setLogs} /> : <p className="text-sm text-muted-foreground">Select Compare from a project to inspect repo vs iCloud differences.</p>}
+      </PageCard> : null}
 
-      <CollapsibleSection title="Sync Jobs" description="Recent auto and manual sync attempts from this running Vaultboy process." icon={<BriefcaseBusiness size={20} />} defaultOpen>
+      {activePage === 'jobs' ? <PageCard title="Sync Jobs" description="Recent auto and manual sync attempts from this running Vaultboy process." icon={<BriefcaseBusiness size={20} />}>
           <div className="grid gap-3">
             {jobs.length === 0 ? <p className="text-sm text-muted-foreground">No sync jobs recorded since this process started.</p> : null}
             {visibleJobs.map((job) => <JobCard key={job.id} job={job} />)}
             {jobs.length > jobsPerPage ? (
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm text-muted-foreground">Page {jobPage} of {totalJobPages} | {jobs.length} jobs</p>
-                <div className="flex gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:flex">
                   <Button type="button" variant="outline" disabled={jobPage <= 1} onClick={() => setJobPage((page) => Math.max(1, page - 1))}>Previous</Button>
                   <Button type="button" variant="outline" disabled={jobPage >= totalJobPages} onClick={() => setJobPage((page) => Math.min(totalJobPages, page + 1))}>Next</Button>
                 </div>
               </div>
             ) : null}
           </div>
-      </CollapsibleSection>
+      </PageCard> : null}
 
-      <CollapsibleSection title="Logs" icon={<ScrollText size={20} />} defaultOpen>
+      {activePage === 'logs' ? <PageCard
+        title={logsProject ? `${logsProject} Logs` : 'Logs'}
+        icon={<ScrollText size={20} />}
+        action={<Button className="w-full sm:w-auto" type="button" variant="outline" onClick={() => setActivePage('projects')}>Back to Projects</Button>}
+      >
           <pre className="max-h-[420px] min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted p-4 text-xs text-foreground [overflow-wrap:anywhere]">{logs}</pre>
-      </CollapsibleSection>
+      </PageCard> : null}
     </main>
   );
 }
 
-function CollapsibleSection({ title, description, icon, action, defaultOpen = false, cardClassName, children }: { title: string; description?: string; icon?: React.ReactNode; action?: React.ReactNode; defaultOpen?: boolean; cardClassName?: string; children: React.ReactNode }) {
-  const [open, setOpen] = React.useState(defaultOpen);
+function PageCard({ title, description, icon, action, children }: { title: string; description?: string; icon?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <Card className={cardClassName}>
-      <CardHeader>
-        <div className="flex min-w-0 items-start justify-between gap-3">
-          <button type="button" className="flex min-w-0 flex-1 items-start gap-2 text-left" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-            {open ? <ChevronDown className="mt-1 shrink-0" size={18} /> : <ChevronRight className="mt-1 shrink-0" size={18} />}
-            <div className="min-w-0">
-              <CardTitle className="flex items-center gap-2">{icon}{title}</CardTitle>
-              {description ? <CardDescription>{description}</CardDescription> : null}
-            </div>
-          </button>
-          {action ? <div className="shrink-0" onClick={(event) => event.stopPropagation()}>{action}</div> : null}
+    <Card>
+      <CardHeader className="p-4 sm:p-5">
+        <div className="flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <CardTitle className="flex min-w-0 items-center gap-2 break-words text-lg sm:text-xl">{icon}{title}</CardTitle>
+            {description ? <CardDescription>{description}</CardDescription> : null}
+          </div>
+          {action ? <div className="min-w-0 shrink-0" onClick={(event) => event.stopPropagation()}>{action}</div> : null}
         </div>
       </CardHeader>
-      {open ? <CardContent className="grid gap-4">{children}</CardContent> : null}
+      <CardContent className="grid gap-4 p-4 pt-0 sm:p-5 sm:pt-0">{children}</CardContent>
     </Card>
   );
 }
@@ -347,17 +424,18 @@ function formatDate(value: string | null | undefined) {
 }
 
 function JobCard({ job }: { job: Job }) {
-  const details = [...job.errors, ...job.conflicts, ...job.copied].slice(0, 6);
+  const notableSkips = (job.skipped || []).filter((item) => item.includes(':'));
+  const details = [...job.errors, ...job.conflicts, ...job.copied, ...notableSkips].slice(0, 10);
   return (
-    <div className="grid gap-2 rounded-md border bg-background p-4 text-sm">
+    <div className="grid min-w-0 gap-2 rounded-md border bg-background p-3 text-sm sm:p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <div className="font-semibold text-foreground">{job.project} | {job.mode}{job.dryRun ? ' | dry run' : ''}</div>
-          <div className="text-muted-foreground">{job.trigger} | started {formatDate(job.startedAt)} | {job.durationMs === null ? 'running' : `${job.durationMs}ms`}</div>
+          <div className="break-all font-semibold text-foreground [overflow-wrap:anywhere]">{job.project} | {job.mode}{job.dryRun ? ' | dry run' : ''}</div>
+          <div className="break-all text-muted-foreground [overflow-wrap:anywhere]">{job.trigger} | started {formatDate(job.startedAt)} | {job.durationMs === null ? 'running' : `${job.durationMs}ms`}</div>
         </div>
         <Badge className="w-fit shrink-0" status={job.status} />
       </div>
-      <div className="text-muted-foreground">Copied {job.copiedCount} | Conflicts {job.conflictCount} | Errors {job.errorCount}</div>
+      <div className="text-muted-foreground">Copied {job.copiedCount} | Conflicts {job.conflictCount} | Errors {job.errorCount} | Skipped {job.skippedCount ?? 0}{job.evictedCount ? ` (${job.evictedCount} evicted, waiting on iCloud download)` : ''}</div>
       {details.length ? <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted p-3 text-xs [overflow-wrap:anywhere]">{details.join('\n')}</pre> : null}
     </div>
   );
@@ -374,11 +452,12 @@ function ComparePanel({ compare, setLogs }: { compare: CompareResult; setLogs: (
 
   return (
     <div className="grid gap-4">
-      <div className="rounded-md border bg-background p-4 text-sm text-muted-foreground">
+      <div className="break-all rounded-md border bg-background p-3 text-sm text-muted-foreground [overflow-wrap:anywhere] sm:p-4">
         <strong className="text-foreground">{compare.project}</strong> | repo {compare.repoFileCount} files / {compare.repoDirCount} dirs | iCloud {compare.icloudFileCount} files / {compare.icloudDirCount} dirs
       </div>
       <DiffList title="Files only in repo" items={compare.filesOnlyInRepo} actionLabel="Dry-run prune repo" onAction={() => dryRun('repo', compare.filesOnlyInRepo)} />
       <DiffList title="Files only in iCloud" items={compare.filesOnlyInIcloud} actionLabel="Dry-run prune iCloud" onAction={() => dryRun('icloud', compare.filesOnlyInIcloud)} />
+      <DiffList title="Evicted from Mac by iCloud (excluded from sync until downloaded)" items={compare.evictedInIcloud || []} />
       <DiffList title="Dirs only in repo" items={compare.dirsOnlyInRepo} />
       <DiffList title="Dirs only in iCloud" items={compare.dirsOnlyInIcloud} />
       <DiffList title="Different on both sides" items={compare.commonDifferent} />
@@ -388,10 +467,10 @@ function ComparePanel({ compare, setLogs }: { compare: CompareResult; setLogs: (
 
 function DiffList({ title, items, actionLabel, onAction }: { title: string; items: string[]; actionLabel?: string; onAction?: () => void }) {
   return (
-    <div className="grid gap-2 rounded-md border bg-background p-4">
+    <div className="grid min-w-0 gap-2 rounded-md border bg-background p-3 sm:p-4">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="font-semibold">{title} ({items.length})</h3>
-        {actionLabel && items.length ? <Button type="button" variant="outline" onClick={onAction}>{actionLabel}</Button> : null}
+        <h3 className="break-words font-semibold">{title} ({items.length})</h3>
+        {actionLabel && items.length ? <Button className="w-full sm:w-auto" type="button" variant="outline" onClick={onAction}>{actionLabel}</Button> : null}
       </div>
       {items.length ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted p-3 text-xs [overflow-wrap:anywhere]">{items.join('\n')}</pre> : <p className="text-sm text-muted-foreground">None</p>}
     </div>
@@ -408,7 +487,7 @@ function Field({ label, value, onChange, placeholder, action, hint }: { label: s
       {label}
       <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
         <Input required value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
-        {action}
+        {action ? <div className="sm:shrink-0">{action}</div> : null}
       </div>
       {hint ? <span className="text-xs font-normal text-muted-foreground">{hint}</span> : null}
     </label>
@@ -417,9 +496,27 @@ function Field({ label, value, onChange, placeholder, action, hint }: { label: s
 
 function ProjectCard({ project, busy, onAction }: { project: Project; busy: string | null; onAction: (project: Project, endpoint: string) => void }) {
   const isBusy = (endpoint: string) => busy === `${project.name}:${endpoint}`;
+  const [openMenu, setOpenMenu] = React.useState<string | null>(null);
+  const syncActions = [
+    { label: 'Sync now', icon: <Play size={18} />, endpoint: 'sync', disabled: isBusy('sync') },
+    { label: 'Pull from iCloud', icon: <Download size={18} />, endpoint: 'pull', disabled: isBusy('pull') },
+    { label: 'Push to iCloud', icon: <Upload size={18} />, endpoint: 'push', disabled: isBusy('push') },
+    { label: 'Force sync', icon: <ShieldCheck size={18} />, endpoint: 'force-sync', disabled: isBusy('force-sync'), destructive: true },
+  ];
+  const inspectActions = [
+    { label: 'Dry run', icon: <TestTube2 size={18} />, endpoint: 'dry-run', disabled: isBusy('dry-run') },
+    { label: 'Compare', icon: <Eye size={18} />, endpoint: 'compare', disabled: isBusy('compare') },
+    { label: 'Logs', icon: <ScrollText size={18} />, endpoint: 'logs' },
+  ];
+  const manageActions = [
+    { label: 'Edit', icon: <Edit3 size={18} />, endpoint: 'edit' },
+    { label: project.enabled ? 'Disable' : 'Enable', icon: <Power size={18} />, endpoint: 'toggle', destructive: project.enabled },
+    { label: 'Delete project', icon: <Trash2 size={18} />, endpoint: 'delete', disabled: isBusy('delete'), destructive: true },
+  ];
+
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="p-4 sm:p-5">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <CardTitle className="flex min-w-0 items-center gap-2 break-all [overflow-wrap:anywhere]"><GitBranch className="shrink-0" size={20} />{project.name}</CardTitle>
@@ -428,27 +525,72 @@ function ProjectCard({ project, busy, onAction }: { project: Project; busy: stri
           <Badge className="w-fit shrink-0" status={project.status} />
         </div>
       </CardHeader>
-      <CardContent className="grid gap-4">
+      <CardContent className="grid gap-4 p-4 pt-0 sm:p-5 sm:pt-0">
         <div className="grid min-w-0 gap-2 text-sm text-muted-foreground">
           <div className="break-all [overflow-wrap:anywhere]"><strong className="text-foreground">Repo:</strong> {project.repoVaultPath}</div>
           <div className="break-all [overflow-wrap:anywhere]"><strong className="text-foreground">iCloud:</strong> {project.icloudVaultPath}</div>
           <div><strong className="text-foreground">Exists:</strong> repo {project.repoExists ? 'yes' : 'no'} | iCloud {project.icloudExists ? 'yes' : 'no'}</div>
-          <div><strong className="text-foreground">Files:</strong> repo {project.repoFileCount} | iCloud {project.icloudFileCount}</div>
+          <div><strong className="text-foreground">Files:</strong> repo {project.repoFileCount} | iCloud {project.icloudFileCount}{project.icloudEvictedCount ? ` (+${project.icloudEvictedCount} evicted)` : ''}</div>
           <div><strong className="text-foreground">Delete propagation:</strong> {project.propagateDeletes ? 'on' : 'off'}</div>
           <div><strong className="text-foreground">Conflicts:</strong> {project.conflictCount || 0}</div>
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <Button onClick={() => onAction(project, 'sync')} disabled={isBusy('sync')}><Play size={18} />Sync now</Button>
-          <Button variant="secondary" onClick={() => onAction(project, 'pull')} disabled={isBusy('pull')}><Download size={18} />Pull from iCloud</Button>
-          <Button variant="secondary" onClick={() => onAction(project, 'push')} disabled={isBusy('push')}><Upload size={18} />Push to iCloud</Button>
-          <Button variant="outline" onClick={() => onAction(project, 'dry-run')} disabled={isBusy('dry-run')}><TestTube2 size={18} />Dry run</Button>
-          <Button variant="outline" onClick={() => onAction(project, 'compare')} disabled={isBusy('compare')}><Eye size={18} />Compare</Button>
-          <Button variant="outline" onClick={() => onAction(project, 'logs')}><Eye size={18} />View logs</Button>
-          <Button variant={project.enabled ? 'destructive' : 'default'} onClick={() => onAction(project, 'toggle')}><Power size={18} />{project.enabled ? 'Disable' : 'Enable'}</Button>
-          <Button variant="ghost" onClick={() => onAction(project, 'edit')}><Edit3 size={18} />Edit</Button>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <ActionMenu title="Sync" open={openMenu === 'sync'} actions={syncActions} onOpenChange={(open) => setOpenMenu(open ? 'sync' : null)} onSelect={(endpoint) => onAction(project, endpoint)} />
+          <ActionMenu title="Inspect" open={openMenu === 'inspect'} actions={inspectActions} onOpenChange={(open) => setOpenMenu(open ? 'inspect' : null)} onSelect={(endpoint) => onAction(project, endpoint)} />
+          <ActionMenu title="Manage" open={openMenu === 'manage'} actions={manageActions} onOpenChange={(open) => setOpenMenu(open ? 'manage' : null)} onSelect={(endpoint) => onAction(project, endpoint)} />
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+type ProjectAction = {
+  label: string;
+  icon: React.ReactNode;
+  endpoint: string;
+  disabled?: boolean;
+  destructive?: boolean;
+};
+
+function ActionMenu({ title, open, actions, onOpenChange, onSelect }: { title: string; open: boolean; actions: ProjectAction[]; onOpenChange: (open: boolean) => void; onSelect: (endpoint: string) => void }) {
+  React.useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function close() {
+      onOpenChange(false);
+    }
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [onOpenChange, open]);
+
+  return (
+    <div className="relative min-w-0" onClick={(event) => event.stopPropagation()}>
+      <Button className="w-full" type="button" variant="outline" aria-expanded={open} onClick={() => onOpenChange(!open)}>
+        {title}
+        <ChevronDown size={16} />
+      </Button>
+      {open ? (
+        <div className="absolute left-0 right-0 z-20 mt-2 grid gap-1 rounded-md border bg-card p-2 shadow-vault sm:right-auto sm:w-56">
+          {actions.map((action) => (
+            <Button
+              key={action.endpoint}
+              className="justify-start"
+              type="button"
+              variant={action.destructive ? 'destructive' : 'ghost'}
+              disabled={action.disabled}
+              onClick={() => {
+                onOpenChange(false);
+                onSelect(action.endpoint);
+              }}
+            >
+              {action.icon}
+              {action.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

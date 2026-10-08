@@ -38,13 +38,14 @@ class Scheduler:
             self._locks[project_name] = threading.Lock()
         return self._locks[project_name]
 
-    def run_project(self, project: ProjectConfig, mode: str = "sync", dry_run: bool = False, trigger: str = "manual") -> dict:
+    def run_project(self, project: ProjectConfig, mode: str = "sync", dry_run: bool = False, trigger: str = "manual", force: bool = False) -> dict:
         started_at = time.time()
         job = {
             "id": f"{project.name}-{int(started_at * 1000)}",
             "project": project.name,
             "mode": mode,
             "dryRun": dry_run,
+            "force": force,
             "trigger": trigger,
             "startedAt": datetime.fromtimestamp(started_at, timezone.utc).isoformat(),
             "finishedAt": None,
@@ -53,9 +54,12 @@ class Scheduler:
             "copiedCount": 0,
             "conflictCount": 0,
             "errorCount": 0,
+            "skippedCount": 0,
+            "evictedCount": 0,
             "copied": [],
             "conflicts": [],
             "errors": [],
+            "skipped": [],
         }
         self._record_job(job)
         lock = self.lock_for(project.name)
@@ -65,7 +69,7 @@ class Scheduler:
             self._finish_job(job, skipped, started_at)
             return skipped
         try:
-            result = self.engine.sync(project, mode=mode, dry_run=dry_run).to_dict()
+            result = self.engine.sync(project, mode=mode, dry_run=dry_run, force=force).to_dict()
             self._finish_job(job, result, started_at)
             return result
         finally:
@@ -91,6 +95,7 @@ class Scheduler:
 
     def _finish_job(self, job: dict[str, Any], result: dict[str, Any], started_at: float) -> None:
         finished_at = time.time()
+        skipped = result.get("skipped", [])
         job.update({
             "finishedAt": datetime.fromtimestamp(finished_at, timezone.utc).isoformat(),
             "durationMs": int((finished_at - started_at) * 1000),
@@ -98,10 +103,13 @@ class Scheduler:
             "copied": result.get("copied", []),
             "conflicts": result.get("conflicts", []),
             "errors": result.get("errors", []),
+            "skipped": skipped[:50],
         })
         job["copiedCount"] = len(job["copied"])
         job["conflictCount"] = len(job["conflicts"])
         job["errorCount"] = len(job["errors"])
+        job["skippedCount"] = len(skipped)
+        job["evictedCount"] = sum(1 for item in skipped if isinstance(item, str) and item.startswith("evicted:"))
 
     def _run(self) -> None:
         while not self._stop.is_set():

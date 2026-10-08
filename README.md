@@ -1,175 +1,190 @@
-# Vaultboy
+# vaultboy
 
-Vaultboy is a local macOS utility that syncs project-level Obsidian vaults between a repository docs folder and the iCloud Obsidian location used by Obsidian iOS.
+A local macOS utility that keeps a repo's Obsidian vault in sync with Obsidian
+iOS. It copies one docs folder to and from the iCloud Obsidian location, keeps
+both sides when they conflict, and refuses syncs that would delete too much.
+It syncs only the configured docs folder, not the whole repo.
 
-The UI is a mobile-first React/Vite interface using shadcn-style components and Tailwind CSS.
+![vaultboy overview](docs/ui.png)
 
-It only syncs the configured docs vault folder. It does not sync the whole repo.
+![Projects view](docs/projects.png)
 
-## Correct iCloud Location
+## Requirements
 
-On iPhone, the vault must live here:
+- macOS with iCloud Drive and the Obsidian app on your iPhone.
+- Python 3.12 or newer.
+- Node, for the web UI.
+- Rust (`brew install rust`), only for the desktop app.
 
-```text
-iCloud Drive/Obsidian/<vault-name>
-```
-
-On macOS, that same location is:
-
-```text
-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault-name>
-```
-
-Do not use a plain iCloud Drive folder. Use the Obsidian folder with the Obsidian app icon.
-
-## Install Dependencies
-
-The root launcher creates `.venv`, installs Python dependencies, installs UI dependencies, and starts the app automatically if needed:
+## Install
 
 ```bash
+git clone https://github.com/wynlo/vaultboy.git
+cd vaultboy
 ./vaultboy
 ```
 
-Manual install:
+The launcher creates `.venv`, installs the Python and UI dependencies, and
+starts the app. Manual install:
 
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -e .
-cd vaultboy_ui
-npm install
-npm run build
+cd vaultboy_ui && npm install && npm run build
 ```
 
-## Run Locally
+## Usage
 
 ```bash
-./vaultboy
+./vaultboy                    # dev mode: Vite hot reload, FastAPI auto reload
+./vaultboy --prod             # build the UI and serve it from FastAPI
+./vaultboy --app              # build Vaultboy.app
+./vaultboy --app --open       # build Vaultboy.app and open it
 ```
 
-By default this runs development mode with Vite hot reload and FastAPI auto reload.
-
-Use the Vite URL for code reloads. The API port redirects `/` to Vite in dev mode.
-
-Default web UI:
+Open the web UI and add a project:
 
 ```text
-http://127.0.0.1:5173
-```
-
-Vaultboy binds to `0.0.0.0` by default so it is reachable from other devices on your local network.
-
-Config is stored at `~/.vaultboy/config.json`, state at `~/.vaultboy/state/<project-name>/manifest.json`, and logs at `~/.vaultboy/logs/vaultboy.log`.
-
-## Development Mode
-
-For UI hot reload and FastAPI auto reload, run:
-
-```bash
-./vaultboy
-```
-
-Open the Vite dev UI:
-
-```text
-http://127.0.0.1:5173
-```
-
-The API still runs at `http://127.0.0.1:4567`, and Vite proxies `/api` requests to it.
-
-If you open `http://127.0.0.1:4567` in dev mode, Vaultboy redirects you to `http://127.0.0.1:5173` so UI changes hot reload correctly.
-
-For production mode, build the UI and serve it from FastAPI:
-
-```bash
-./vaultboy --prod
-```
-
-Production UI runs at:
-
-```text
-http://127.0.0.1:4567
-```
-
-## Access From iPhone
-
-For same-network access in dev mode, open `http://<your-mac-lan-ip>:5173`.
-
-For production mode, open `http://<your-mac-lan-ip>:4567`.
-
-With Tailscale, open `http://<mac-tailscale-name>:4567` or use your Mac's Tailscale IP.
-
-Vaultboy has no authentication in the MVP, so only expose it on trusted networks.
-
-## Add First Project
-
-Open the web UI and fill in:
-
-```text
-Project name: example-project
-Repo docs path: /Users/me/Projects/example-project/docs
+Project name:      example-project
+Repo docs path:    /Users/me/Projects/example-project/docs
 iCloud vault path: /Users/me/Library/Mobile Documents/iCloud~md~obsidian/Documents/example-project
-Enabled: on
+Enabled:           on
 ```
 
-The repo docs path must already exist. Vaultboy creates the iCloud vault path if it is missing.
+The repo docs path must exist. Vaultboy creates the iCloud vault path if it is
+missing.
 
-## Sync Modes
+| Mode | URL |
+|---|---|
+| Dev UI | `http://127.0.0.1:5173` |
+| Dev API | `http://127.0.0.1:4567` (redirects `/` to Vite) |
+| Production | `http://127.0.0.1:4567` |
 
-Pull copies from iCloud Obsidian to repo docs. Push copies from repo docs to iCloud Obsidian. Safe sync pulls first, then pushes. Dry run reports planned work without copying files.
+### iCloud location
 
-Deletes are propagated by default. Vaultboy deletes an unchanged counterpart when a previously synced file is removed from the other side. Changed files are not deleted automatically. Set `propagateDeletes` to `false` for a project to keep deleted counterparts as skipped files instead.
+The vault must be in the Obsidian folder (the one with the Obsidian icon), not
+a plain iCloud Drive folder.
 
-## Conflict Handling
+| Device | Path |
+|---|---|
+| iPhone | `iCloud Drive/Obsidian/<vault-name>` |
+| macOS | `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/<vault-name>` |
 
-Vaultboy stores a per-project manifest at `~/.vaultboy/state/<project-name>/manifest.json`.
+### Sync modes
 
-If both repo and iCloud versions changed since the last sync, Vaultboy keeps both versions and creates a conflict copy instead of overwriting either side blindly.
+| Mode | Description |
+|---|---|
+| Pull | Copy from iCloud Obsidian to repo docs. |
+| Push | Copy from repo docs to iCloud Obsidian. |
+| Safe sync | Pull, then push. |
+| Dry run | Report the planned work. Copy nothing. |
+| Force sync | Apply a sync that the delete guard refused. |
 
-Conflict files use this format:
+### Recommended workflow
 
-```text
-original-name.conflict-YYYYMMDD-HHMMSS.md
+1. Edit notes on iPhone in Obsidian.
+2. Let iCloud sync to the Mac.
+3. Vaultboy pulls the changes into `repo/docs`.
+4. Review `git diff` and commit.
+5. Vaultboy pushes `repo/docs` back to iCloud.
+
+Git stays the source of truth for `repo/docs`. Vaultboy does not replace
+`git diff`, code review or commits.
+
+## Configuration
+
+`~/.vaultboy/config.json`. Restart after a change.
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 4567,
+  "intervalSeconds": 300,
+  "apiToken": "",
+  "projects": [
+    {
+      "name": "example-project",
+      "repoVaultPath": "/Users/me/Projects/example-project/docs",
+      "icloudVaultPath": "/Users/me/Library/Mobile Documents/iCloud~md~obsidian/Documents/example-project",
+      "enabled": true,
+      "propagateDeletes": true
+    }
+  ]
+}
 ```
 
-Conflicts are logged and surfaced in the UI.
+| Field | Default | Description |
+|---|---|---|
+| `host` | `127.0.0.1` | Bind address. Set `0.0.0.0` for LAN or Tailscale access. |
+| `port` | `4567` | API and production UI port. |
+| `intervalSeconds` | `300` | Auto-sync interval. |
+| `apiToken` | empty | If set, mutating API calls require this token. Reads stay open. |
+| `propagateDeletes` | `true` | Per project. If `false`, deleted counterparts are skipped. |
 
-## Launchd Agent
+| File | Path |
+|---|---|
+| Config | `~/.vaultboy/config.json` |
+| State | `~/.vaultboy/state/<project-name>/manifest.json` |
+| Logs | `~/.vaultboy/logs/vaultboy.log` |
 
-Install the login agent without sudo:
+## Features
+
+- **Conflict copies.** If both sides changed since the last sync, Vaultboy
+  keeps both and writes `original-name.conflict-YYYYMMDD-HHMMSS.md`. The UI
+  and the log show each conflict.
+- **Delete propagation.** A file removed on one side deletes the unchanged
+  counterpart. Changed files are never deleted automatically. Tombstones
+  expire after 30 days.
+- **Delete guards.**
+  - Evicted iCloud files (`.name.icloud` placeholders) are not deletions.
+    Vaultboy requests the download and skips them until they are back
+    (`evicted:` in job details).
+  - A sync that would delete more than `max(5, 20%)` of tracked files stops
+    and lists the planned deletions. Use dry run or compare, then Force sync.
+  - If one side scans empty while the other has files, delete propagation is
+    off for that pass.
+- **iPhone access.** Open `http://<mac-lan-ip>:5173` (dev) or `:4567` (prod),
+  or use your Mac's Tailscale name. The UI asks for `apiToken` once and keeps
+  it in the browser. Expose Vaultboy on trusted networks only.
+- **Desktop app.** A Tauri app that bundles the backend as a PyInstaller
+  sidecar. No Python or terminal is required to run it. On launch it attaches
+  to a backend already on the port (dev mode or launchd), or starts its own
+  and stops it on quit. Output:
+  `vaultboy_desktop/src-tauri/target/release/bundle/macos/Vaultboy.app`.
+  The app is unsigned. To distribute it, you need Developer ID signing and
+  notarization.
+- **Launchd agent.** Runs `./vaultboy --prod` at login, without sudo, so sync
+  continues with no app open. Logs go to `~/.vaultboy/logs/`.
+
+  ```bash
+  ./scripts/install-launchd.sh
+  ./scripts/uninstall-launchd.sh
+  ```
+
+- **Ignored paths.** `.git`, `node_modules`, build folders, `dist`, `.next`,
+  `target`, `.venv`, `__pycache__`, `.DS_Store`, and Obsidian workspace, cache
+  and plugin state.
+
+## Development
 
 ```bash
-./scripts/install-launchd.sh
+./vaultboy                         # hot reload
+.venv/bin/python -m pytest tests   # sync engine tests
 ```
 
-Uninstall it:
+Use the Vite URL for code reloads. Vite proxies `/api` to port 4567.
 
-```bash
-./scripts/uninstall-launchd.sh
-```
+## Troubleshooting
 
-The agent runs `./vaultboy --prod` and writes launchd stdout/stderr to `~/.vaultboy/logs/`.
+- **Edits from iPhone do not arrive.** iOS is not an always-on sync daemon.
+  Background limits, battery, network and iCloud scheduling can delay files.
+  Let iCloud finish syncing to the Mac before you expect a pull.
+- **Sync refused with planned deletions.** The mass-delete guard stopped it.
+  Check with dry run, then use Force sync if the deletions are intended.
+- **Files show as `evicted:`.** "Optimize Mac Storage" removed them locally.
+  They sync after iCloud downloads them again.
 
-## Why iOS Is Not Always-On
+## Limitations
 
-iOS does not behave like a guaranteed always-on file sync daemon. Background execution, battery policy, network state, and iCloud scheduling can delay file propagation. Let iCloud finish syncing to the Mac before expecting Vaultboy to pull the latest edits.
-
-## Git Source Of Truth
-
-Git remains the source of truth for `repo/docs`. Vaultboy moves notes between iCloud Obsidian and the repo docs vault, but it does not replace `git diff`, code review, or commits.
-
-Recommended workflow:
-
-1. Edit notes on iPhone using Obsidian.
-2. Let iCloud sync to Mac.
-3. Vaultboy pulls changes into `repo/docs`.
-4. Review `git diff`.
-5. Commit docs changes.
-6. Vaultboy pushes `repo/docs` back to iCloud when needed.
-
-## Ignored Paths
-
-Vaultboy ignores `.git`, `node_modules`, build folders, `dist`, `.next`, `target`, `.venv`, `__pycache__`, `.DS_Store`, and volatile Obsidian workspace/cache/plugin state.
-
-## Known Limitations
-
-The MVP has no database, no authentication, no file watcher, and no native iOS app. It uses periodic sync plus manual sync actions.
+No database, no file watcher and no native iOS app. Sync is periodic plus
+manual actions. The only authentication is the optional `apiToken`.

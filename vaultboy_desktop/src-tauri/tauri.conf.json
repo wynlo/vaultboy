@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Vaultboy",
+  "version": "0.1.0",
+  "identifier": "app.vaultboy.desktop",
+  "build": {
+    "beforeBuildCommand": "cd ../vaultboy_ui && npm run build",
+    "frontendDist": "../../vaultboy_app/web"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "externalBin": ["binaries/vaultboy-backend"],
+    "icon": ["icons/icon.icns", "icons/icon.png"]
+  }
+}

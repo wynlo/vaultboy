@@ -1,0 +1,13 @@
+{
+  "name": "vaultboy-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri": "tauri",
+    "build:backend": "./build-backend.sh",
+    "build": "npm run build:backend && tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -44,16 +44,18 @@ class ProjectConfig:
 @dataclass
 class AppConfig:
     intervalSeconds: int = 300
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 4567
+    apiToken: str = ""
     projects: list[ProjectConfig] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppConfig":
         return cls(
             intervalSeconds=int(data.get("intervalSeconds", 300)),
-            host=str(data.get("host", "0.0.0.0")),
+            host=str(data.get("host", "127.0.0.1")),
             port=int(data.get("port", 4567)),
+            apiToken=str(data.get("apiToken", "")).strip(),
             projects=[ProjectConfig.from_dict(item) for item in data.get("projects", [])],
         )
 
@@ -62,6 +64,7 @@ class AppConfig:
             "intervalSeconds": self.intervalSeconds,
             "host": self.host,
             "port": self.port,
+            "apiToken": self.apiToken,
             "projects": [project.to_dict() for project in self.projects],
         }
 

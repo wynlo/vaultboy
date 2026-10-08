@@ -10,6 +10,7 @@ IGNORED_DIRS = {".git", "node_modules", "build", "dist", ".next", "target", ".ve
 IGNORED_FILES = {".DS_Store"}
 IGNORED_EXACT = {".obsidian/workspace.json", ".obsidian/workspace-mobile.json"}
 IGNORED_PREFIXES = {".obsidian/cache/"}
+ICLOUD_PLACEHOLDER_SUFFIX = ".icloud"
 
 
 def should_ignore(relative_path: str, is_dir: bool = False) -> bool:
@@ -30,6 +31,17 @@ def should_ignore(relative_path: str, is_dir: bool = False) -> bool:
     return False
 
 
+def evicted_original_name(name: str) -> str | None:
+    """Map an iCloud placeholder filename like `.Note.md.icloud` to `Note.md`.
+
+    macOS "Optimize Mac Storage" replaces evicted file contents with these
+    placeholders; the real file is still in iCloud, just not on disk.
+    """
+    if name.startswith(".") and name.endswith(ICLOUD_PLACEHOLDER_SUFFIX) and len(name) > len(ICLOUD_PLACEHOLDER_SUFFIX) + 1:
+        return name[1 : -len(ICLOUD_PLACEHOLDER_SUFFIX)]
+    return None
+
+
 def hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -38,11 +50,21 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def scan_vault(root: Path) -> dict[str, FileInfo]:
+def scan_vault_detailed(root: Path, cache: dict[str, dict] | None = None) -> tuple[dict[str, FileInfo], set[str]]:
+    """Scan a vault, returning (files, evicted).
+
+    `evicted` holds relative paths of files whose contents are evicted to
+    iCloud (represented on disk only by a `.name.icloud` placeholder); they are
+    never included in `files`. `cache` maps relative path -> {mtime, size,
+    hash}; a file whose mtime and size match its cache entry reuses the cached
+    hash instead of re-reading the content.
+    """
     root = root.expanduser()
-    if not root.exists() or not root.is_dir():
-        return {}
     files: dict[str, FileInfo] = {}
+    evicted: set[str] = set()
+    if not root.exists() or not root.is_dir():
+        return files, evicted
+    cache = cache or {}
     try:
         paths = list(root.rglob("*"))
     except OSError as exc:
@@ -53,6 +75,24 @@ def scan_vault(root: Path) -> dict[str, FileInfo]:
             continue
         if not path.is_file():
             continue
+        original = evicted_original_name(path.name)
+        if original is not None:
+            real_relative = (path.parent / original).relative_to(root).as_posix()
+            if not should_ignore(real_relative):
+                evicted.add(real_relative)
+            continue
         stat = path.stat()
-        files[relative] = FileInfo(relative, path, hash_file(path), stat.st_mtime, stat.st_size)
+        entry = cache.get(relative)
+        if entry and entry.get("mtime") == stat.st_mtime and entry.get("size") == stat.st_size and entry.get("hash"):
+            file_hash = entry["hash"]
+        else:
+            file_hash = hash_file(path)
+        files[relative] = FileInfo(relative, path, file_hash, stat.st_mtime, stat.st_size)
+    # A placeholder can coexist briefly with the materialized file; trust the real file.
+    evicted -= set(files)
+    return files, evicted
+
+
+def scan_vault(root: Path) -> dict[str, FileInfo]:
+    files, _ = scan_vault_detailed(root)
     return files

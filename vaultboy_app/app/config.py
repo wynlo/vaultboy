@@ -51,6 +51,15 @@ def get_project(config: AppConfig, name: str) -> ProjectConfig | None:
     return None
 
 
+def delete_project(config: AppConfig, name: str) -> ProjectConfig | None:
+    project = get_project(config, name)
+    if not project:
+        return None
+    config.projects = [item for item in config.projects if item.name != name]
+    save_config(config)
+    return project
+
+
 def upsert_project(config: AppConfig, project: ProjectConfig, original_name: str | None = None) -> AppConfig:
     if not project.name:
         raise ValueError("Project name is required")

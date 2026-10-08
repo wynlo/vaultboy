@@ -1,25 +1,51 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .config import LOG_PATH, default_icloud_path, get_project, load_config, save_config, setup_logging, upsert_project
+from .config import LOG_PATH, default_icloud_path, delete_project, get_project, load_config, save_config, setup_logging, upsert_project
 from .models import ProjectConfig
 from .scheduler import Scheduler
-from .sync_engine import SyncEngine
+from .sync_engine import SyncEngine, manifest_path
 from .web import mount_web
 
 setup_logging()
 engine = SyncEngine()
 scheduler = Scheduler(engine)
 app = FastAPI(title="Vaultboy", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_startup_config = load_config()
+if _startup_config.host in _LOOPBACK_HOSTS:
+    _allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        f"http://localhost:{_startup_config.port}",
+        f"http://127.0.0.1:{_startup_config.port}",
+        # Tauri desktop webview origins
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+    ]
+else:
+    _allowed_origins = ["*"]
+app.add_middleware(CORSMiddleware, allow_origins=_allowed_origins, allow_methods=["*"], allow_headers=["*"])
+
+
+def require_token(authorization: str | None = Header(default=None)) -> None:
+    """Guard mutating endpoints with the optional apiToken from config.json."""
+    token = load_config().apiToken
+    if not token:
+        return
+    if authorization != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="Invalid or missing API token")
 
 
 @app.on_event("startup")
@@ -50,7 +76,7 @@ def api_projects() -> list[dict[str, Any]]:
     return [engine.describe_project(project) for project in config.projects]
 
 
-@app.post("/api/pick-folder")
+@app.post("/api/pick-folder", dependencies=[Depends(require_token)])
 def api_pick_folder() -> dict[str, str | None]:
     try:
         result = subprocess.run(
@@ -75,7 +101,7 @@ def api_suggest_icloud_path(name: str = "", repoVaultPath: str = "") -> dict[str
     return {"path": str(default_icloud_path(vault_name))}
 
 
-@app.post("/api/projects")
+@app.post("/api/projects", dependencies=[Depends(require_token)])
 def api_add_project(payload: dict[str, Any]) -> dict[str, Any]:
     config = load_config()
     project = ProjectConfig.from_dict(payload)
@@ -83,7 +109,7 @@ def api_add_project(payload: dict[str, Any]) -> dict[str, Any]:
     return engine.describe_project(project)
 
 
-@app.put("/api/projects/{name}")
+@app.put("/api/projects/{name}", dependencies=[Depends(require_token)])
 def api_edit_project(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     config = load_config()
     if not get_project(config, name):
@@ -93,7 +119,19 @@ def api_edit_project(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     return engine.describe_project(project)
 
 
-@app.post("/api/projects/{name}/enable")
+@app.delete("/api/projects/{name}", dependencies=[Depends(require_token)])
+def api_delete_project(name: str) -> dict[str, Any]:
+    config = load_config()
+    project = delete_project(config, name)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    state_dir = manifest_path(name).parent
+    if state_dir.is_dir():
+        shutil.rmtree(state_dir, ignore_errors=True)
+    return {"project": project.name, "deleted": True}
+
+
+@app.post("/api/projects/{name}/enable", dependencies=[Depends(require_token)])
 def api_enable_project(name: str) -> dict[str, Any]:
     config = load_config()
     project = get_project(config, name)
@@ -104,7 +142,7 @@ def api_enable_project(name: str) -> dict[str, Any]:
     return engine.describe_project(project)
 
 
-@app.post("/api/projects/{name}/disable")
+@app.post("/api/projects/{name}/disable", dependencies=[Depends(require_token)])
 def api_disable_project(name: str) -> dict[str, Any]:
     config = load_config()
     project = get_project(config, name)
@@ -115,30 +153,33 @@ def api_disable_project(name: str) -> dict[str, Any]:
     return engine.describe_project(project)
 
 
-def run_project_action(name: str, mode: str, dry_run: bool = False) -> dict[str, Any]:
+def run_project_action(name: str, mode: str, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
     config = load_config()
     project = get_project(config, name)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    return scheduler.run_project(project, mode=mode, dry_run=dry_run)
+    return scheduler.run_project(project, mode=mode, dry_run=dry_run, force=force)
 
 
-@app.post("/api/projects/{name}/sync")
-def api_sync_project(name: str) -> dict[str, Any]:
-    return run_project_action(name, "sync")
+@app.post("/api/projects/{name}/sync", dependencies=[Depends(require_token)])
+def api_sync_project(name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    force = bool((payload or {}).get("force", False))
+    return run_project_action(name, "sync", force=force)
 
 
-@app.post("/api/projects/{name}/pull")
-def api_pull_project(name: str) -> dict[str, Any]:
-    return run_project_action(name, "pull")
+@app.post("/api/projects/{name}/pull", dependencies=[Depends(require_token)])
+def api_pull_project(name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    force = bool((payload or {}).get("force", False))
+    return run_project_action(name, "pull", force=force)
 
 
-@app.post("/api/projects/{name}/push")
-def api_push_project(name: str) -> dict[str, Any]:
-    return run_project_action(name, "push")
+@app.post("/api/projects/{name}/push", dependencies=[Depends(require_token)])
+def api_push_project(name: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    force = bool((payload or {}).get("force", False))
+    return run_project_action(name, "push", force=force)
 
 
-@app.post("/api/projects/{name}/dry-run")
+@app.post("/api/projects/{name}/dry-run", dependencies=[Depends(require_token)])
 def api_dry_run_project(name: str) -> dict[str, Any]:
     return run_project_action(name, "sync", dry_run=True)
 
@@ -152,7 +193,7 @@ def api_compare_project(name: str) -> dict[str, Any]:
     return engine.compare(project)
 
 
-@app.post("/api/projects/{name}/prune")
+@app.post("/api/projects/{name}/prune", dependencies=[Depends(require_token)])
 def api_prune_project(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     config = load_config()
     project = get_project(config, name)
@@ -192,7 +233,8 @@ else:
 
 def run() -> None:
     config = load_config()
-    uvicorn.run("vaultboy_app.app.main:app", host=config.host, port=config.port, reload=False)
+    # Pass the app object (not an import string) so frozen/PyInstaller builds work.
+    uvicorn.run(app, host=config.host, port=config.port, reload=False)
 
 
 if __name__ == "__main__":
